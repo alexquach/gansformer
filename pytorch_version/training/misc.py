@@ -160,7 +160,7 @@ def create_img_grid(imgs, grid_size = None):
 def save_img_grid(imgs, filename, drange = [0,1], grid_size = None):
     to_pil(create_img_grid(imgs, grid_size), drange).save(filename) # .cpu().numpy()
 
-def setup_snapshot_img_grid(dataset, size = "1080p"):
+def setup_snapshot_img_grid(dataset, size = (3, 2)):
     # dataset: dataset object to iterate over
     # size:
     ### "1080p" = to be viewed on 1080p display
@@ -178,6 +178,8 @@ def setup_snapshot_img_grid(dataset, size = "1080p"):
     elif size == "8k":
         gw = np.clip(7680 // dataset.shape[2], 7, 32)
         gh = np.clip(4320 // dataset.shape[1], 4, 32)
+    elif isinstance(size, tuple):
+        gw, gh = size
     else: # if size is int, return an image list with that number of images
         gw = size
 
