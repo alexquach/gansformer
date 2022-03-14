@@ -83,7 +83,7 @@ class StyleGAN2Loss(Loss):
 
                 training_stats.report("Loss/G/loss", loss_G_main)
             with torch.autograd.profiler.record_function("G_main_backward"):
-                loss_G_main.mean().mul(gain).backward()
+                loss_G_main.mean().mul(gain).backward(retain_graph=True)
 
         # G_pl: Apply path length regularization
         if G_pl:
@@ -120,7 +120,7 @@ class StyleGAN2Loss(Loss):
                     loss_D_gen = gen_logits
 
             with torch.autograd.profiler.record_function("D_gen_backward"):
-                loss_D_gen.mean().mul(gain).backward()
+                loss_D_gen.mean().mul(gain).backward(retain_graph=True)
 
         # D_main: Maximize logits for real images
         # D_r1: Apply R1 regularization

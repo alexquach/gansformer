@@ -19,6 +19,7 @@ import PIL.Image
 import numpy as np
 import torch
 import glob 
+import warnings
 
 import dnnlib
 from torch_utils import misc as torch_misc
@@ -47,14 +48,26 @@ def load_dataset(dataset_args, batch_size, rank, num_gpus, log):
     return dataset, dataset_iter
 
 # Fetch real images and their corresponding labels, and sample latents/labels
-def fetch_data(dataset, dataset_iter, input_shape, drange_net, device, batches_num, batch_size, batch_gpu):
+def fetch_data(dataset, dataset_iter, input_shape, drange_net, device, batches_num, batch_size, batch_gpu, dino_encoder, translator):
     with torch.autograd.profiler.record_function("data_fetch"):
         real_img, real_c = next(dataset_iter)
         real_img = real_img.to(device).to(torch.float32)
+        
+        warnings.filterwarnings("ignore", category=UserWarning)
+        dino_embs = dino_encoder(real_img) #[32, 384]
+        warnings.filterwarnings("default", category=UserWarning)
+        
         real_img = misc.adjust_range(real_img, [0, 255], drange_net).split(batch_gpu)
         real_c = real_c.to(device).split(batch_gpu)
+        
+        # Call DINO here instead 4 * 32, [input_shape[1:]] = 17, 32
+        # 128, 17, 32
+        # x = torch.nn.Linear(384, 4 * 17 * 32).to(device)(dino_embs)
+        # gen_zs = torch.nn.ReLU()(x).reshape(128, 17, 32)
 
-        gen_zs = torch.randn([batches_num * batch_size, *input_shape[1:]], device = device)
+        gen_zs = translator(dino_embs).reshape(128, 17, 32)
+
+        # gen_zs = torch.randn([batches_num * batch_size, *input_shape[1:]], device = device)
         gen_zs = [gen_zs.split(batch_gpu) for gen_z in gen_zs.split(batch_size)]
 
         gen_cs = [dataset.get_label(np.random.randint(len(dataset))) for _ in range(batches_num * batch_size)]
@@ -164,6 +177,9 @@ def setup_training_stages(loss_args, G, cG, D, cD, ddp_nets, device, log):
             opt_args = dnnlib.EasyDict(config.opt_args)
             opt_args.lr = opt_args.lr * mb_ratio
             opt_args.betas = [beta ** mb_ratio for beta in opt_args.betas]
+            # if name == "G":
+            #     opt = dnnlib.util.construct_class_by_name([*[x for x in net.parameters()], *[x for x in translator.parameters()]], **opt_args) # subclass of torch.optimOptimizer
+            # else:
             opt = dnnlib.util.construct_class_by_name(net.parameters(), **opt_args) # subclass of torch.optimOptimizer
             stages.append(dnnlib.EasyDict(name = f"{name}_main", net = net, opt = opt, interval = 1))
             stages.append(dnnlib.EasyDict(name = f"{name}_reg", net = net, opt = opt, interval = config.reg_interval))
@@ -178,11 +194,12 @@ def setup_training_stages(loss_args, G, cG, D, cD, ddp_nets, device, log):
     return loss, stages
 
 # Compute gradients and update the network weights for the current training stage
-def run_training_stage(loss, stage, device, real_img, real_c, gen_z, gen_c, batch_size, batch_gpu, num_gpus):
+def run_training_stage(loss, stage, device, real_img, real_c, gen_z, gen_c, batch_size, batch_gpu, num_gpus, translator):
     # Initialize gradient accumulation
     if stage.start_event is not None:
         stage.start_event.record(torch.cuda.current_stream(device))
-    
+
+    # if stage.name != "G_reg" and stage.name != "G_main":    
     stage.opt.zero_grad(set_to_none = True)
     stage.net.requires_grad_(True)
 
@@ -363,6 +380,9 @@ def training_loop(
     if not train:
         exit()
 
+    translator = torch.nn.Sequential(torch.nn.Linear(384, 4 * 17 * 32), 
+                                     torch.nn.ReLU()).to(device)
+
     nets = distribute_nets(G, D, Gs, device, num_gpus, log)                                   # Distribute networks across GPUs
     loss, stages = setup_training_stages(loss_args, G, cG, D, cD, nets, device, log)          # Setup training stages (losses and optimizers)
     grid_size, grid_z, grid_c = init_img_grid(dataset, G.input_shape, device, run_dir, log)   # Initialize an image grid    
@@ -374,16 +394,19 @@ def training_loop(
     tick_start_nimg, tick_start_time = cur_nimg, time.time()
     stats = None
 
+    # cached, but probably a more efficient way to do this
+    vits16 = torch.hub.load('facebookresearch/dino:main', 'dino_vits16').to(device)
+
     while True:
         # Fetch training data
         real_img, real_c, gen_zs, gen_cs = fetch_data(dataset, dataset_iter, G.input_shape, drange_net, 
-            device, len(stages), batch_size, batch_gpu)
+            device, len(stages), batch_size, batch_gpu, vits16, translator)
 
         # Execute training stages
         for stage, gen_z, gen_c in zip(stages, gen_zs, gen_cs):
             if batch_idx % stage.interval != 0:
                 continue
-            run_training_stage(loss, stage, device, real_img, real_c, gen_z, gen_c, batch_size, batch_gpu, num_gpus)
+            run_training_stage(loss, stage, device, real_img, real_c, gen_z, gen_c, batch_size, batch_gpu, num_gpus, translator)
 
         # Update Gs
         update_ema_network(G, Gs, batch_size, cur_nimg, ema_kimg, ema_rampup)
@@ -427,13 +450,13 @@ def training_loop(
                 labels = grid_c, drange_net = drange_net, ratio = dataset.ratio, **vis_args)
 
         # Save network snapshot
-        if (network_snapshot_ticks is not None) and (done or cur_tick % network_snapshot_ticks == 0):
-            snapshot_data, snapshot_pkl = save_nets(G, D, Gs, cur_nimg, dataset_args, run_dir, num_gpus > 1, last_snapshots, log)
+        # if (network_snapshot_ticks is not None) and (done or cur_tick % network_snapshot_ticks == 0):
+        #     snapshot_data, snapshot_pkl = save_nets(G, D, Gs, cur_nimg, dataset_args, run_dir, num_gpus > 1, last_snapshots, log)
 
-            # Evaluate metrics
-            evaluate(snapshot_data["Gs"], snapshot_pkl, metrics, eval_images_num,
-                dataset_args, num_gpus, rank, device, log, logger, run_dir)
-            del snapshot_data
+        #     # Evaluate metrics
+        #     evaluate(snapshot_data["Gs"], snapshot_pkl, metrics, eval_images_num,
+        #         dataset_args, num_gpus, rank, device, log, logger, run_dir)
+        #     del snapshot_data
 
         # Collect stats and update logs
         stats = collect_stats(logger, stages)
