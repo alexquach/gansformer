@@ -221,7 +221,7 @@ def compute_feature_stats_for_dataset(opts, detector_url, detector_kwargs, rel_l
 
 def compute_feature_stats_for_generator(opts, detector_url, detector_kwargs, rel_lo = 0, rel_hi = 1, batch_size = 64, batch_gen = None, jit = False, **stats_args):
     if batch_gen is None:
-        batch_gen = min(batch_size, 4)
+        batch_gen = min(batch_size, 32)
     assert batch_size % batch_gen == 0
 
     # Setup generator and load labels
