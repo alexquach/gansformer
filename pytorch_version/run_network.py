@@ -14,6 +14,7 @@ import argparse
 import glob
 import sys 
 import loader
+import tensorflow as tf
 
 # Conditional set: if property is not None, then assign d[name] := prop
 # for every d in a set of dictionaries
@@ -423,6 +424,7 @@ def _parse_comma_sep(s):
     return s.split(",")
 
 def main():
+    tf.debugging.experimental.enable_dump_debug_info("./results/tfdbg2_logdir", tensor_debug_mode="FULL_HEALTH", circular_buffer_size=-1)
     parser = argparse.ArgumentParser(description = "Train the GANformer")
 
     # Framework

@@ -53,9 +53,9 @@ def fetch_data(dataset, dataset_iter, input_shape, drange_net, device, batches_n
         real_img, real_c = next(dataset_iter)
         real_img = real_img.to(device).to(torch.float32)
         
-        warnings.filterwarnings("ignore", category=UserWarning)
-        dino_embs = dino_encoder(real_img) #[32, 384]
-        warnings.filterwarnings("default", category=UserWarning)
+        # warnings.filterwarnings("ignore", category=UserWarning)
+        # dino_embs = dino_encoder(real_img) #[32, 384]
+        # warnings.filterwarnings("default", category=UserWarning)
         
         real_img = misc.adjust_range(real_img, [0, 255], drange_net).split(batch_gpu)
         real_c = real_c.to(device).split(batch_gpu)
@@ -65,9 +65,9 @@ def fetch_data(dataset, dataset_iter, input_shape, drange_net, device, batches_n
         # x = torch.nn.Linear(384, 4 * 17 * 32).to(device)(dino_embs)
         # gen_zs = torch.nn.ReLU()(x).reshape(128, 17, 32)
 
-        gen_zs = translator(dino_embs).reshape(128, 17, 32)
+        # gen_zs = translator(dino_embs).reshape(128, 17, 32)
 
-        # gen_zs = torch.randn([batches_num * batch_size, *input_shape[1:]], device = device)
+        gen_zs = torch.randn([batches_num * batch_size, *input_shape[1:]], device = device)
         gen_zs = [gen_zs.split(batch_gpu) for gen_z in gen_zs.split(batch_size)]
 
         gen_cs = [dataset.get_label(np.random.randint(len(dataset))) for _ in range(batches_num * batch_size)]
@@ -162,7 +162,7 @@ def init_cuda(rank, cudnn_benchmark, allow_tf32):
     return device
 
 # Setup training stages (alternating optimization of G and D, and for )
-def setup_training_stages(loss_args, G, cG, D, cD, ddp_nets, device, log):
+def setup_training_stages(loss_args, G, cG, D, cD, ddp_nets, device, log, translator):
     misc.log("Setting up training stages...", "white", log)
     loss = dnnlib.util.construct_class_by_name(device = device, **ddp_nets, **loss_args) # subclass of training.loss.Loss
     stages = []
@@ -177,10 +177,10 @@ def setup_training_stages(loss_args, G, cG, D, cD, ddp_nets, device, log):
             opt_args = dnnlib.EasyDict(config.opt_args)
             opt_args.lr = opt_args.lr * mb_ratio
             opt_args.betas = [beta ** mb_ratio for beta in opt_args.betas]
-            # if name == "G":
-            #     opt = dnnlib.util.construct_class_by_name([*[x for x in net.parameters()], *[x for x in translator.parameters()]], **opt_args) # subclass of torch.optimOptimizer
-            # else:
-            opt = dnnlib.util.construct_class_by_name(net.parameters(), **opt_args) # subclass of torch.optimOptimizer
+            if name == "G":
+                opt = dnnlib.util.construct_class_by_name([*[x for x in net.parameters()], *[x for x in translator.parameters()]], **opt_args) # subclass of torch.optimOptimizer
+            else:
+                opt = dnnlib.util.construct_class_by_name(net.parameters(), **opt_args) # subclass of torch.optimOptimizer
             stages.append(dnnlib.EasyDict(name = f"{name}_main", net = net, opt = opt, interval = 1))
             stages.append(dnnlib.EasyDict(name = f"{name}_reg", net = net, opt = opt, interval = config.reg_interval))
 
@@ -194,7 +194,7 @@ def setup_training_stages(loss_args, G, cG, D, cD, ddp_nets, device, log):
     return loss, stages
 
 # Compute gradients and update the network weights for the current training stage
-def run_training_stage(loss, stage, device, real_img, real_c, gen_z, gen_c, batch_size, batch_gpu, num_gpus, translator):
+def run_training_stage(loss, stage, device, real_img, real_c, gen_z, gen_c, batch_size, batch_gpu, num_gpus, vits16, translator):
     # Initialize gradient accumulation
     if stage.start_event is not None:
         stage.start_event.record(torch.cuda.current_stream(device))
@@ -207,7 +207,7 @@ def run_training_stage(loss, stage, device, real_img, real_c, gen_z, gen_c, batc
     for round_idx, (x, cx, z, cz) in enumerate(zip(real_img, real_c, gen_z, gen_c)):
         sync = (round_idx == batch_size // (batch_gpu * num_gpus) - 1)
         loss.accumulate_gradients(stage = stage.name, real_img = x, real_c = cx, 
-            gen_z = z, gen_c = cz, sync = sync, gain = stage.interval)
+            gen_z = z, gen_c = cz, sync = sync, gain = stage.interval, vits16=vits16, translator=translator)
 
     # Update weights
     stage.net.requires_grad_(False)
@@ -380,11 +380,12 @@ def training_loop(
     if not train:
         exit()
 
-    translator = torch.nn.Sequential(torch.nn.Linear(384, 4 * 17 * 32), 
-                                     torch.nn.ReLU()).to(device)
+    # translator = torch.nn.Linear(384, 17 * 32).to(device)
+    translator = torch.nn.Sequential(torch.nn.Linear(384, 17 * 32), 
+                                     torch.nn.ReLU(inplace=False)).to(device)
 
     nets = distribute_nets(G, D, Gs, device, num_gpus, log)                                   # Distribute networks across GPUs
-    loss, stages = setup_training_stages(loss_args, G, cG, D, cD, nets, device, log)          # Setup training stages (losses and optimizers)
+    loss, stages = setup_training_stages(loss_args, G, cG, D, cD, nets, device, log, translator)          # Setup training stages (losses and optimizers)
     grid_size, grid_z, grid_c = init_img_grid(dataset, G.input_shape, device, run_dir, log)   # Initialize an image grid    
     logger = init_logger(run_dir, log)                                                        # Initialize logs
 
@@ -396,6 +397,8 @@ def training_loop(
 
     # cached, but probably a more efficient way to do this
     vits16 = torch.hub.load('facebookresearch/dino:main', 'dino_vits16').to(device)
+    for parameter in vits16.parameters():
+        parameter.requires_grad = False
 
     while True:
         # Fetch training data
@@ -406,7 +409,7 @@ def training_loop(
         for stage, gen_z, gen_c in zip(stages, gen_zs, gen_cs):
             if batch_idx % stage.interval != 0:
                 continue
-            run_training_stage(loss, stage, device, real_img, real_c, gen_z, gen_c, batch_size, batch_gpu, num_gpus, translator)
+            run_training_stage(loss, stage, device, real_img, real_c, gen_z, gen_c, batch_size, batch_gpu, num_gpus, vits16, translator)
 
         # Update Gs
         update_ema_network(G, Gs, batch_size, cur_nimg, ema_kimg, ema_rampup)
@@ -450,13 +453,13 @@ def training_loop(
                 labels = grid_c, drange_net = drange_net, ratio = dataset.ratio, **vis_args)
 
         # Save network snapshot
-        # if (network_snapshot_ticks is not None) and (done or cur_tick % network_snapshot_ticks == 0):
-        #     snapshot_data, snapshot_pkl = save_nets(G, D, Gs, cur_nimg, dataset_args, run_dir, num_gpus > 1, last_snapshots, log)
+        if (network_snapshot_ticks is not None) and (done or cur_tick % network_snapshot_ticks == 0):
+            snapshot_data, snapshot_pkl = save_nets(G, D, Gs, cur_nimg, dataset_args, run_dir, num_gpus > 1, last_snapshots, log)
 
-        #     # Evaluate metrics
-        #     evaluate(snapshot_data["Gs"], snapshot_pkl, metrics, eval_images_num,
-        #         dataset_args, num_gpus, rank, device, log, logger, run_dir)
-        #     del snapshot_data
+            # Evaluate metrics
+            evaluate(snapshot_data["Gs"], snapshot_pkl, metrics, eval_images_num,
+                dataset_args, num_gpus, rank, device, log, logger, run_dir)
+            del snapshot_data
 
         # Collect stats and update logs
         stats = collect_stats(logger, stages)
