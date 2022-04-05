@@ -330,6 +330,7 @@ def training_loop(
     rank                    = 0,        # Rank of the current process in [0, num_gpus]
     cG                      = {},       # Options for generator network
     cD                      = {},       # Options for discriminator network
+    vits_path               = None,     # Path to the DINO ViT model
     # Data
     dataset_args            = {},       # Options for training set
     drange_net              = [-1,1],   # Dynamic range used when feeding image data to the networks
@@ -368,9 +369,9 @@ def training_loop(
     G, D, Gs = load_nets(resume_pkl, nets, device, log)                           # Resume from existing pickle
     print_nets(G, D, batch_gpu, device, log)                                      # Print network summary tables
 
-    if eval:
-        misc.log("Run evaluation...", log = log)
-        evaluate(Gs, resume_pkl, metrics, eval_images_num, dataset_args, num_gpus, rank, device, log)
+    # if eval:
+    #     misc.log("Run evaluation...", log = log)
+    #     evaluate(Gs, resume_pkl, metrics, eval_images_num, dataset_args, num_gpus, rank, device, log)
 
     if vis and log:
         misc.log("Produce visualizations...")
@@ -396,7 +397,10 @@ def training_loop(
     stats = None
 
     # cached, but probably a more efficient way to do this
-    vits16 = torch.hub.load('facebookresearch/dino:main', 'dino_vits16').to(device)
+    if vits_path is None:
+        vits16 = torch.hub.load('facebookresearch/dino:main', 'dino_vits16').to(device)
+    else:
+        vits16 = torch.load(vits_path).to(device)
     for parameter in vits16.parameters():
         parameter.requires_grad = False
 
@@ -456,9 +460,9 @@ def training_loop(
         if (network_snapshot_ticks is not None) and (done or cur_tick % network_snapshot_ticks == 0):
             snapshot_data, snapshot_pkl = save_nets(G, D, Gs, cur_nimg, dataset_args, run_dir, num_gpus > 1, last_snapshots, log)
 
-            # Evaluate metrics
-            evaluate(snapshot_data["Gs"], snapshot_pkl, metrics, eval_images_num,
-                dataset_args, num_gpus, rank, device, log, logger, run_dir)
+            # # Evaluate metrics
+            # evaluate(snapshot_data["Gs"], snapshot_pkl, metrics, eval_images_num,
+            #     dataset_args, num_gpus, rank, device, log, logger, run_dir)
             del snapshot_data
 
         # Collect stats and update logs

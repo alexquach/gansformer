@@ -586,6 +586,8 @@ def main():
     # parser.add_argument("--merge-type",       help = "Merge type (default: sum)", default = None, choices = ["sum", "softmax", "max", "leaves"], type = str)
     # parser.add_argument("--merge-same",       help = "Merge images with same alpha weights across all spatial positions (default: %(default)s)", default = None, action = "store_true")
 
+    parser.add_argument("--vits-path",         help = "Path to the VITS dataset (default: %(default)s)", default = None, type = str)
+
     args = parser.parse_args()
 
     dnnlib.util.Logger(should_flush = True)

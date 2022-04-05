@@ -74,9 +74,15 @@ class StyleGAN2Loss(Loss):
         if G_main:
             with torch.autograd.profiler.record_function("G_main_forward"):
                 gen_img, _gen_ws = self.run_G(gen_z, gen_c, sync = (sync and not G_pl)) # May get synced by G_pl
+                # TODO: Check dimensionality of gen_logits -> 32 real/fake probabilities for each image
+                # [32, 1]
                 gen_logits = self.run_D(gen_img, gen_c, sync = False)
                 training_stats.report("Loss/scores/fake", gen_logits)
                 training_stats.report("Loss/signs/fake", gen_logits.sign())
+
+                # Added Reconstruction loss
+                absolute_error_loss = torch.sum(torch.abs(gen_img - real_img), [1, 2, 3]).reshape(-1, 1)
+                training_stats.report("Loss/absolute_error_loss", absolute_error_loss)
     
                 if self.g_loss == "logistic":
                     loss_G_main = -torch.nn.functional.softplus(gen_logits) # -log(sigmoid(gen_logits))
@@ -86,6 +92,8 @@ class StyleGAN2Loss(Loss):
                     loss_G_main = -torch.clamp(1.0 + gen_logits, min = 0)
                 elif self.g_loss == "wgan":
                     loss_G_main = -gen_logits
+
+                loss_G_main = loss_G_main + absolute_error_loss
 
                 training_stats.report("Loss/G/loss", loss_G_main)
             with torch.autograd.profiler.record_function("G_main_backward"):
