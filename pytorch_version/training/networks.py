@@ -1497,6 +1497,7 @@ class Discriminator(torch.nn.Module):
 
         self.b4 = DiscriminatorEpilogue(channels_num(4), c_dim, resolution = 4, **epilogue_kwargs, **common_kwargs)
 
+    # TODO: Add conditional 384 dimension DINO embedding
     def forward(self, img, c, **block_kwargs):
         img = misc.crop_tensor(img, self.crop_ratio)
         img_shape = misc.crop_tensor_shape((self.img_resolution, self.img_resolution), self.crop_ratio)

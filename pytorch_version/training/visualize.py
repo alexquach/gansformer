@@ -62,6 +62,7 @@ def vis(G,
     batch_size,                       # Visualization batch size
     run_dir             = ".",        # Output directory
     training            = False,      # Training mode
+    images              = None,       # Images to save
     latents             = None,       # Source latents to generate images from
     labels              = None,       # Source labels to generate images from (0 if no labels are used)
     ratio               = 1.0,        # Image height/width ratio in the dataset
@@ -98,9 +99,10 @@ def vis(G,
     if grid is None: grid = training # Save image samples in one grid file during training    
     if grid_size is not None: section_size = rich_num = num = np.prod(grid_size) # If grid size is provided, set images number accordingly
 
-    _labels, _latents = labels, latents
+    _labels, _latents, _images = labels, latents, images
     if _latents is not None: assert num == _latents.shape[0]
     if _labels  is not None: assert num == _labels.shape[0]
+    if _images  is not None: assert num == _images.shape[0]
     assert rich_num <= section_size
 
     vis = vis_types
@@ -113,12 +115,14 @@ def vis(G,
         vis = vis or {"imgs", "maps", "ltnts", "interpolations", "noise_var"}
 
     # Build utility functions
+    save_recon_images = misc.save_images_builder(drange_net, ratio, (grid_size[0], grid_size[1] * 2), grid, verbose)
     save_images = misc.save_images_builder(drange_net, ratio, grid_size, grid, verbose)
     save_blends = misc.save_blends_builder(drange_net, ratio, grid_size, grid, verbose, alpha)
 
     crange = trange if verbose else range
     section_of = lambda a, i, n: a[i * n: (i + 1) * n]
 
+    # TODO: Change this to use the same code as in the training loop
     get_rnd_latents = lambda n: torch.randn([n, *G.input_shape[1:]], device = device)
     get_rnd_labels = lambda n: torch.from_numpy(dataset.get_random_labels(n)).to(device)
 
@@ -151,13 +155,17 @@ def vis(G,
         ret = run(G, latents, labels, batch_size, truncation_psi, noise_mode = "const", 
             return_att = True, return_ws = True)
         # For memory efficiency, save full information only for a small amount of images
-        images, attmaps_all_layers, wlatents_all_layers = ret
+        gen_images, attmaps_all_layers, wlatents_all_layers = ret
         soft_maps = attmaps_all_layers[:,:,-1,0] if attention else None
         attmaps_all_layers = attmaps_all_layers[:rich_num]
         wlatents = wlatents_all_layers[:,:,0]
         # Save image samples
         if "imgs" in vis:
-            save_images(images, pattern_of("images", step, "png"), idx)
+            if images is not None:
+                processed_images = misc.adjust_range(images, [0, 255], drange_net)
+                save_recon_images(np.vstack([gen_images, processed_images]), pattern_of("images", step, "png"), idx)
+            else:
+                save_images(gen_images, pattern_of("images", step, "png"), idx)
 
         # Save latent vectors
         if "ltnts" in vis:
@@ -176,8 +184,8 @@ def vis(G,
                 save_images(soft_maps, pattern_of("softmaps", step, "png"), idx)
                 save_images(maps, pattern_of("maps", step, "png"), idx)
 
-                save_blends(soft_maps, images, pattern_of("softblends", step, "png"), idx)
-                save_blends(maps, images, pattern_of("blends", step, "png"), idx)
+                save_blends(soft_maps, gen_images, pattern_of("softblends", step, "png"), idx)
+                save_blends(maps, gen_images, pattern_of("blends", step, "png"), idx)
 
             # Save maps from all attention heads and layers
             # (for efficiency, only for a small number of images)
@@ -286,7 +294,7 @@ def vis(G,
             "component": (np.arange(wlatents_all_layers.shape[1]) < row_lens[:,None]).astype(np.float32)[:,None,None,:,None,None]
         }
         ws = wlatents_all_layers[:cols+rows]
-        orig_imgs = images[:cols+rows]
+        orig_imgs = gen_images[:cols+rows]
         col_z = wlatents_all_layers[:cols][None, None]
         row_z = wlatents_all_layers[cols:cols+rows][None,:,None]
 

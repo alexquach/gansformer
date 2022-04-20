@@ -587,6 +587,7 @@ def main():
     # parser.add_argument("--merge-same",       help = "Merge images with same alpha weights across all spatial positions (default: %(default)s)", default = None, action = "store_true")
 
     parser.add_argument("--vits-path",         help = "Path to the VITS dataset (default: %(default)s)", default = None, type = str)
+    parser.add_argument("--recon-weight",      help = "Reconstruction loss weight (default: %(default)s)", default = 1, type = float)
 
     args = parser.parse_args()
 

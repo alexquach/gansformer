@@ -194,7 +194,7 @@ def setup_training_stages(loss_args, G, cG, D, cD, ddp_nets, device, log, transl
     return loss, stages
 
 # Compute gradients and update the network weights for the current training stage
-def run_training_stage(loss, stage, device, real_img, real_c, gen_z, gen_c, batch_size, batch_gpu, num_gpus, vits16, translator):
+def run_training_stage(loss, stage, device, real_img, real_c, gen_z, gen_c, batch_size, batch_gpu, num_gpus, vits16, translator, recon_weight):
     # Initialize gradient accumulation
     if stage.start_event is not None:
         stage.start_event.record(torch.cuda.current_stream(device))
@@ -207,7 +207,7 @@ def run_training_stage(loss, stage, device, real_img, real_c, gen_z, gen_c, batc
     for round_idx, (x, cx, z, cz) in enumerate(zip(real_img, real_c, gen_z, gen_c)):
         sync = (round_idx == batch_size // (batch_gpu * num_gpus) - 1)
         loss.accumulate_gradients(stage = stage.name, real_img = x, real_c = cx, 
-            gen_z = z, gen_c = cz, sync = sync, gain = stage.interval, vits16=vits16, translator=translator)
+            gen_z = z, gen_c = cz, sync = sync, gain = stage.interval, vits16=vits16, translator=translator, recon_weight=recon_weight)
 
     # Update weights
     stage.net.requires_grad_(False)
@@ -254,11 +254,12 @@ def evaluate(Gs, snapshot_pkl, metrics, eval_images_num, dataset_args, num_gpus,
 def init_img_grid(dataset, input_shape, device, run_dir, log): 
     if not log:
         return None, None, None
-    grid_size, images, labels = misc.setup_snapshot_img_grid(dataset)
-    misc.save_img_grid(images, os.path.join(run_dir, "reals.png"), drange = [0, 255], grid_size = grid_size)
+    grid_size, grid_images, labels = misc.setup_snapshot_img_grid(dataset)
+    misc.save_img_grid(grid_images, os.path.join(run_dir, "reals.png"), drange = [0, 255], grid_size = grid_size)
+    # TODO: Change from random noise to real images
     grid_z = torch.randn([labels.shape[0], *input_shape[1:]], device = device)
     grid_c = torch.from_numpy(labels).to(device)
-    return grid_size, grid_z, grid_c
+    return grid_size, grid_z, grid_c, grid_images
 
 # Save a snapshot of the sampled grid for the given latents/labels
 def snapshot_img_grid(Gs, drange_net, grid_z, grid_c, grid_size, batch_gpu, truncation_psi, suffix = "init"):
@@ -343,6 +344,7 @@ def training_loop(
     ema_rampup              = None,     # EMA ramp-up coefficient
     cudnn_benchmark         = True,     # Enable torch.backends.cudnnbenchmark?
     allow_tf32              = False,    # Enable torch.backends.cuda.matmul.allow_tf32 and torch.backends.cudnnallow_tf32?
+    recon_weight            = 5.0,      # Reconstruction loss weight   
     # Logging
     resume_pkl              = None,     # Network pickle to resume training from
     resume_kimg             = 0.0,      # Assumed training progress at the beginning
@@ -387,7 +389,8 @@ def training_loop(
 
     nets = distribute_nets(G, D, Gs, device, num_gpus, log)                                   # Distribute networks across GPUs
     loss, stages = setup_training_stages(loss_args, G, cG, D, cD, nets, device, log, translator)          # Setup training stages (losses and optimizers)
-    grid_size, grid_z, grid_c = init_img_grid(dataset, G.input_shape, device, run_dir, log)   # Initialize an image grid    
+    # Grid of visualized images; are constants used throughout training
+    grid_size, grid_z, grid_c, grid_images = init_img_grid(dataset, G.input_shape, device, run_dir, log)   # Initialize an image grid    
     logger = init_logger(run_dir, log)                                                        # Initialize logs
 
     # Train
@@ -413,7 +416,7 @@ def training_loop(
         for stage, gen_z, gen_c in zip(stages, gen_zs, gen_cs):
             if batch_idx % stage.interval != 0:
                 continue
-            run_training_stage(loss, stage, device, real_img, real_c, gen_z, gen_c, batch_size, batch_gpu, num_gpus, vits16, translator)
+            run_training_stage(loss, stage, device, real_img, real_c, gen_z, gen_c, batch_size, batch_gpu, num_gpus, vits16, translator, recon_weight)
 
         # Update Gs
         update_ema_network(G, Gs, batch_size, cur_nimg, ema_kimg, ema_rampup)
@@ -454,7 +457,7 @@ def training_loop(
         if log and (img_snapshot_ticks is not None) and (done or cur_tick % img_snapshot_ticks == 0):
             visualize.vis(Gs, dataset, device, batch_gpu, training = True,
                 step = cur_nimg // 1000, grid_size = grid_size, latents = grid_z, 
-                labels = grid_c, drange_net = drange_net, ratio = dataset.ratio, **vis_args)
+                labels = grid_c, images = grid_images, drange_net = drange_net, ratio = dataset.ratio, **vis_args)
 
         # Save network snapshot
         if (network_snapshot_ticks is not None) and (done or cur_tick % network_snapshot_ticks == 0):

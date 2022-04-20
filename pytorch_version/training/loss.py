@@ -58,7 +58,7 @@ class StyleGAN2Loss(Loss):
             logits = self.D(img, c)
         return logits
 
-    def accumulate_gradients(self, stage, real_img, real_c, gen_z, gen_c, sync, gain, vits16, translator):
+    def accumulate_gradients(self, stage, real_img, real_c, gen_z, gen_c, sync, gain, vits16, translator, recon_weight):
         assert stage in ["G_main", "G_reg", "G_both", "D_main", "D_reg", "D_both"]
         torch.autograd.set_detect_anomaly(True)
         G_main = (stage in ["G_main", "G_both"])
@@ -81,8 +81,8 @@ class StyleGAN2Loss(Loss):
                 training_stats.report("Loss/signs/fake", gen_logits.sign())
 
                 # Added Reconstruction loss
-                absolute_error_loss = torch.sum(torch.abs(gen_img - real_img), [1, 2, 3]).reshape(-1, 1)
-                training_stats.report("Loss/absolute_error_loss", absolute_error_loss)
+                mean_absolute_error_loss = torch.mean(torch.abs(gen_img - real_img), [1, 2, 3]).reshape(-1, 1)
+                training_stats.report("Loss/mean_absolute_error_loss", mean_absolute_error_loss)
     
                 if self.g_loss == "logistic":
                     loss_G_main = -torch.nn.functional.softplus(gen_logits) # -log(sigmoid(gen_logits))
@@ -93,7 +93,7 @@ class StyleGAN2Loss(Loss):
                 elif self.g_loss == "wgan":
                     loss_G_main = -gen_logits
 
-                loss_G_main = loss_G_main + absolute_error_loss
+                loss_G_main = loss_G_main + recon_weight * mean_absolute_error_loss
 
                 training_stats.report("Loss/G/loss", loss_G_main)
             with torch.autograd.profiler.record_function("G_main_backward"):
