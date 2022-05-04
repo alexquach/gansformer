@@ -6,6 +6,8 @@ from torch_utils import misc
 from torch_utils.ops import conv2d_gradfix
 import warnings
 
+import lpips
+
 #----------------------------------------------------------------------------
 
 class Loss:
@@ -76,9 +78,14 @@ class StyleGAN2Loss(Loss):
                 training_stats.report("Loss/scores/fake", gen_logits)
                 training_stats.report("Loss/signs/fake", gen_logits.sign())
 
-                # Added Reconstruction loss
+                # Pixel-wise Reconstruction loss
                 mean_absolute_error_loss = torch.mean(torch.abs(gen_img - real_img), [1, 2, 3]).reshape(-1, 1)
                 training_stats.report("Loss/mean_absolute_error_loss", mean_absolute_error_loss)
+
+                # Perceptual Reconstruction loss
+                loss_fn_alex = lpips.LPIPS(net='alex').to(self.device) # best forward scores
+                lpips_alex_loss = loss_fn_alex(gen_img, real_img).reshape(-1, 1)
+                training_stats.report("Loss/lpips_alex_loss", lpips_alex_loss)
     
                 if self.g_loss == "logistic":
                     loss_G_main = -torch.nn.functional.softplus(gen_logits) # -log(sigmoid(gen_logits))
@@ -89,7 +96,7 @@ class StyleGAN2Loss(Loss):
                 elif self.g_loss == "wgan":
                     loss_G_main = -gen_logits
 
-                loss_G_main = loss_G_main + recon_weight * mean_absolute_error_loss
+                loss_G_main = loss_G_main + recon_weight * mean_absolute_error_loss + lpips_alex_loss
 
                 training_stats.report("Loss/G/loss", loss_G_main)
             with torch.autograd.profiler.record_function("G_main_backward"):
