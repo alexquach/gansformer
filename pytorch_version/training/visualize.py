@@ -162,8 +162,8 @@ def vis(G,
         # Save image samples
         if "imgs" in vis:
             if images is not None:
-                processed_images = misc.adjust_range(images, [0, 255], drange_net)
-                save_recon_images(np.vstack([gen_images, processed_images]), pattern_of("images", step, "png"), idx)
+                # processed_images = misc.adjust_range(images, [0, 255], drange_net)
+                save_recon_images(np.vstack([gen_images, images]), pattern_of("images", step, "png"), idx)
             else:
                 save_images(gen_images, pattern_of("images", step, "png"), idx)
 
