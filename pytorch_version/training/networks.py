@@ -1440,8 +1440,10 @@ class DiscriminatorEpilogue(torch.nn.Module):
         self.conv = Conv2dLayer(in_channels + mbstd_num_channels, in_channels, kernel_size = 3, act = act)
         
         # self.fc =  FullyConnectedLayer(in_channels * (resolution ** 2), in_channels, act = act)
-        self.fc_new = FullyConnectedLayer(in_channels * (resolution ** 2) + c_dim, 1, act = act)
-        self.out = FullyConnectedLayer(in_channels, max(c_dim, 1))
+        # self.out = FullyConnectedLayer(in_channels, max(c_dim, 1))
+        self.fc1 = FullyConnectedLayer(in_channels * (resolution ** 2) + c_dim, in_channels * (resolution ** 2), act = act)
+        self.fc2 = FullyConnectedLayer(in_channels * (resolution ** 2), in_channels, act = act)
+        self.fc3 = FullyConnectedLayer(in_channels, 1, act = 'linear')
 
     def forward(self, x, img, c):
         # torch_misc.assert_shape(x, [None, self.in_channels, self.resolution, self.resolution]) # [NCHW]
@@ -1454,10 +1456,11 @@ class DiscriminatorEpilogue(torch.nn.Module):
         # Main layers
         if self.mbstd is not None:
             x = self.mbstd(x)
-        x = self.conv(x) # post conv rep
+        x = self.conv(x)
         # TODO: Try Concatenating + Adding further layers
-        # fc_new output should be 1 dim r/f
-        x = self.fc_new(torch.cat([x.flatten(1), c], dim = 1))
+        x = self.fc1(torch.cat([x.flatten(1), c], dim = 1))
+        x = self.fc2(x)
+        x = self.fc3(x)
 
         # x = self.fc(x.flatten(1))
         # x = self.out(x)
@@ -1467,6 +1470,7 @@ class DiscriminatorEpilogue(torch.nn.Module):
         #     torch_misc.assert_shape(c, [None, self.c_dim])
         #     x = (x * c).sum(dim = 1, keepdim = True)
 
+        # final output should be dimension 1 for real/fake determination
         return x
 
 @persistence.persistent_class
