@@ -63,7 +63,7 @@ def setup_config(run_dir, **args):
 
         nset(args, "transformer", True)
         nset(args, "components_num", {"clevr": 8}.get(task, 16))
-        nset(args, "latent_size", {"clevr": 128}.get(task, 512))
+        nset(args, "latent_size", {"clevr": 128}.get(task, 384)) #change to 384 for DINO latent dims
 
         nset(args, "normalize", "layer")
         nset(args, "integration", "mul")
@@ -239,6 +239,7 @@ def setup_config(run_dir, **args):
     # Networks architecture
     cset(cG.synthesis_kwargs, "architecture", args.g_arch)
     cset(cD, "architecture", args.d_arch)
+    # cset(cD, "c_dim", 384)
 
     # Latent sizes
     if args.components_num > 0:
@@ -250,7 +251,8 @@ def setup_config(run_dir, **args):
         args.latent_size = int(args.latent_size / args.components_num)
 
     cG.z_dim = cG.w_dim = args.latent_size
-    cset([cG, vis], "k", args.components_num + 1) # We add a component to modulate features globally
+    cset([cG, vis], "k", args.components_num) # Modify to not add a global component
+    # We add a component to modulate features globally
 
     # Mapping network
     args.mapping_layer_dim = args.mapping_dim

@@ -58,7 +58,7 @@ class StyleGAN2Loss(Loss):
             logits = self.D(img, c)
         return logits
 
-    def accumulate_gradients(self, stage, real_img, real_c, gen_z, gen_c, sync, gain, vits16, translator, recon_weight):
+    def accumulate_gradients(self, stage, real_img, real_c, gen_z, gen_c, sync, gain, vits16, recon_weight):
         assert stage in ["G_main", "G_reg", "G_both", "D_main", "D_reg", "D_both"]
         torch.autograd.set_detect_anomaly(True)
         G_main = (stage in ["G_main", "G_both"])
@@ -66,10 +66,6 @@ class StyleGAN2Loss(Loss):
         G_pl   = (stage in ["G_reg", "G_both"]) and (self.pl_weight != 0)
         D_r1   = (stage in ["D_reg", "D_both"]) and (self.r1_gamma != 0)
 
-        warnings.filterwarnings("ignore", category=UserWarning)
-        dino_embs = vits16(real_img) 
-        gen_z = translator(dino_embs).reshape(real_img.shape[0], 17, 32)
-        warnings.filterwarnings("default", category=UserWarning)
         # G_main: Maximize logits for generated images
         if G_main:
             with torch.autograd.profiler.record_function("G_main_forward"):

@@ -190,9 +190,8 @@ class MLP(torch.nn.Module):
                     from_dim = in_dim, to_dim = in_dim, **sa_kwargs)
                 setattr(self, f"sa{idx}", sa_layer)
 
-            if resnet:
+            if resnet and in_dim == out_dim:
                 layer = ResnetLayer(in_dim, act = act, lrmul = lrmul)
-                assert in_dim == out_dim
             else:
                 layer = FullyConnectedLayer(in_dim, out_dim, act = act, lrmul = lrmul)
             
@@ -1440,7 +1439,8 @@ class DiscriminatorEpilogue(torch.nn.Module):
         self.mbstd = MinibatchStdLayer(group_size = mbstd_group_size, num_channels = mbstd_num_channels) if mbstd_num_channels > 0 else None
         self.conv = Conv2dLayer(in_channels + mbstd_num_channels, in_channels, kernel_size = 3, act = act)
         
-        self.fc =  FullyConnectedLayer(in_channels * (resolution ** 2), in_channels, act = act)
+        # self.fc =  FullyConnectedLayer(in_channels * (resolution ** 2), in_channels, act = act)
+        self.fc_new = FullyConnectedLayer(in_channels * (resolution ** 2) + c_dim, 1, act = act)
         self.out = FullyConnectedLayer(in_channels, max(c_dim, 1))
 
     def forward(self, x, img, c):
@@ -1454,14 +1454,18 @@ class DiscriminatorEpilogue(torch.nn.Module):
         # Main layers
         if self.mbstd is not None:
             x = self.mbstd(x)
-        x = self.conv(x)
-        x = self.fc(x.flatten(1))
-        x = self.out(x)
+        x = self.conv(x) # post conv rep
+        # TODO: Try Concatenating + Adding further layers
+        # fc_new output should be 1 dim r/f
+        x = self.fc_new(torch.cat([x.flatten(1), c], dim = 1))
 
-        # Conditioning
-        if self.c_dim > 0:
-            torch_misc.assert_shape(c, [None, self.c_dim])
-            x = (x * c).sum(dim = 1, keepdim = True)
+        # x = self.fc(x.flatten(1))
+        # x = self.out(x)
+
+        # # Conditioning "Masking"
+        # if self.c_dim > 0:
+        #     torch_misc.assert_shape(c, [None, self.c_dim])
+        #     x = (x * c).sum(dim = 1, keepdim = True)
 
         return x
 

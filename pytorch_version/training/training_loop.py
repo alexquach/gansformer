@@ -48,30 +48,29 @@ def load_dataset(dataset_args, batch_size, rank, num_gpus, log):
     return dataset, dataset_iter
 
 # Fetch real images and their corresponding labels, and sample latents/labels
-def fetch_data(dataset, dataset_iter, input_shape, drange_net, device, batches_num, batch_size, batch_gpu, dino_encoder, translator):
+def fetch_data(dataset, dataset_iter, input_shape, drange_net, device, batches_num, batch_size, batch_gpu, vits16):
     with torch.autograd.profiler.record_function("data_fetch"):
-        real_img, real_c = next(dataset_iter)
+        real_img, real_c = next(dataset_iter) #[32, 3, 128, 128]
         real_img = real_img.to(device).to(torch.float32)
-        
-        # warnings.filterwarnings("ignore", category=UserWarning)
-        # dino_embs = dino_encoder(real_img) #[32, 384]
-        # warnings.filterwarnings("default", category=UserWarning)
-        
-        real_img = misc.adjust_range(real_img, [0, 255], drange_net).split(batch_gpu)
+                
+        # Adjust pixel range
+        real_img = misc.adjust_range(real_img, [0, 255], drange_net)
         real_c = real_c.to(device).split(batch_gpu)
+
+        warnings.filterwarnings("ignore", category=UserWarning)
+        dino_embs = vits16(real_img) #[32, 384]
+        warnings.filterwarnings("default", category=UserWarning)
         
-        # Call DINO here instead 4 * 32, [input_shape[1:]] = 17, 32
-        # 128, 17, 32
-        # x = torch.nn.Linear(384, 4 * 17 * 32).to(device)(dino_embs)
-        # gen_zs = torch.nn.ReLU()(x).reshape(128, 17, 32)
+        real_img = real_img.split(batch_gpu)
 
-        # gen_zs = translator(dino_embs).reshape(128, 17, 32)
+        gen_zs = dino_embs.reshape(-1, 16, 24)
+        #gen_zs = torch.randn([batches_num * batch_size, *input_shape[1:]], device = device) #[128, 16, 24]
+        gen_zs = [gen_zs.split(batch_gpu) for gen_z in gen_zs.split(batch_size)] #[4, 32, 16, 24]
+        #[4, 4, 32, 16, 24]
 
-        gen_zs = torch.randn([batches_num * batch_size, *input_shape[1:]], device = device)
-        gen_zs = [gen_zs.split(batch_gpu) for gen_z in gen_zs.split(batch_size)]
-
-        gen_cs = [dataset.get_label(np.random.randint(len(dataset))) for _ in range(batches_num * batch_size)]
-        gen_cs = torch.from_numpy(np.stack(gen_cs)).pin_memory().to(device)
+        gen_cs = dino_embs.clone()
+        # gen_cs = [dataset.get_label(np.random.randint(len(dataset))) for _ in range(batches_num * batch_size)]
+        # gen_cs = torch.from_numpy(np.stack(gen_cs)).pin_memory().to(device)
         gen_cs = [gen_c.split(batch_gpu) for gen_c in gen_cs.split(batch_size)]
 
     return real_img, real_c, gen_zs, gen_cs
@@ -82,7 +81,10 @@ def fetch_data(dataset, dataset_iter, input_shape, drange_net, device, batches_n
 # Construct networks
 def construct_nets(cG, cD, dataset, device, log):
     misc.log("Constructing networks...", "white", log)
-    common_kwargs = dict(c_dim = dataset.label_dim, img_resolution = dataset.resolution, img_channels = dataset.num_channels)
+    # TODO: Fix magic variable
+    common_kwargs = dict(c_dim = 384, img_resolution = dataset.resolution, img_channels = dataset.num_channels)
+    # cG['c_dim'] = dataset.label_dim
+    # cD['c_dim'] = dataset.label_dim if 'c_dim' not in cD else cD['c_dim']
     G = dnnlib.util.construct_class_by_name(**cG, **common_kwargs).train().requires_grad_(False).to(device) # subclass of torch.nnnet
     D = dnnlib.util.construct_class_by_name(**cD, **common_kwargs).train().requires_grad_(False).to(device) # subclass of torch.nnnet
     Gs = copy.deepcopy(G).eval()
@@ -162,7 +164,7 @@ def init_cuda(rank, cudnn_benchmark, allow_tf32):
     return device
 
 # Setup training stages (alternating optimization of G and D, and for )
-def setup_training_stages(loss_args, G, cG, D, cD, ddp_nets, device, log, translator):
+def setup_training_stages(loss_args, G, cG, D, cD, ddp_nets, device, log):
     misc.log("Setting up training stages...", "white", log)
     loss = dnnlib.util.construct_class_by_name(device = device, **ddp_nets, **loss_args) # subclass of training.loss.Loss
     stages = []
@@ -177,10 +179,10 @@ def setup_training_stages(loss_args, G, cG, D, cD, ddp_nets, device, log, transl
             opt_args = dnnlib.EasyDict(config.opt_args)
             opt_args.lr = opt_args.lr * mb_ratio
             opt_args.betas = [beta ** mb_ratio for beta in opt_args.betas]
-            if name == "G":
-                opt = dnnlib.util.construct_class_by_name([*[x for x in net.parameters()], *[x for x in translator.parameters()]], **opt_args) # subclass of torch.optimOptimizer
-            else:
-                opt = dnnlib.util.construct_class_by_name(net.parameters(), **opt_args) # subclass of torch.optimOptimizer
+            # if name == "G":
+            #     opt = dnnlib.util.construct_class_by_name([*[x for x in net.parameters()], *[x for x in translator.parameters()]], **opt_args) # subclass of torch.optimOptimizer
+            # else:
+            opt = dnnlib.util.construct_class_by_name(net.parameters(), **opt_args) # subclass of torch.optimOptimizer
             stages.append(dnnlib.EasyDict(name = f"{name}_main", net = net, opt = opt, interval = 1))
             stages.append(dnnlib.EasyDict(name = f"{name}_reg", net = net, opt = opt, interval = config.reg_interval))
 
@@ -194,7 +196,7 @@ def setup_training_stages(loss_args, G, cG, D, cD, ddp_nets, device, log, transl
     return loss, stages
 
 # Compute gradients and update the network weights for the current training stage
-def run_training_stage(loss, stage, device, real_img, real_c, gen_z, gen_c, batch_size, batch_gpu, num_gpus, vits16, translator, recon_weight):
+def run_training_stage(loss, stage, device, real_img, real_c, gen_z, gen_c, batch_size, batch_gpu, num_gpus, vits16, recon_weight):
     # Initialize gradient accumulation
     if stage.start_event is not None:
         stage.start_event.record(torch.cuda.current_stream(device))
@@ -204,10 +206,12 @@ def run_training_stage(loss, stage, device, real_img, real_c, gen_z, gen_c, batc
     stage.net.requires_grad_(True)
 
     # Accumulate gradients over multiple rounds
+    # real img [32, 3, 128, 128]
+    # gen_z [4, 32, 16, 24]
     for round_idx, (x, cx, z, cz) in enumerate(zip(real_img, real_c, gen_z, gen_c)):
         sync = (round_idx == batch_size // (batch_gpu * num_gpus) - 1)
         loss.accumulate_gradients(stage = stage.name, real_img = x, real_c = cx, 
-            gen_z = z, gen_c = cz, sync = sync, gain = stage.interval, vits16=vits16, translator=translator, recon_weight=recon_weight)
+            gen_z = z, gen_c = cz, sync = sync, gain = stage.interval, vits16=vits16, recon_weight=recon_weight)
 
     # Update weights
     stage.net.requires_grad_(False)
@@ -251,14 +255,27 @@ def evaluate(Gs, snapshot_pkl, metrics, eval_images_num, dataset_args, num_gpus,
 # ----------------------------------------------------------------------------
 
 # Initialize image grid, of both real and generated sampled
-def init_img_grid(dataset, input_shape, device, run_dir, log): 
+def init_img_grid(dataset, input_shape, device, run_dir, log, vits16): 
     if not log:
         return None, None, None
     grid_size, grid_images, labels = misc.setup_snapshot_img_grid(dataset)
     misc.save_img_grid(grid_images, os.path.join(run_dir, "reals.png"), drange = [0, 255], grid_size = grid_size)
+
+    grid_images = torch.Tensor(grid_images).to(device).to(torch.float32)
+            
+    # Adjust pixel range
+    grid_images = misc.adjust_range(grid_images, [0, 255], [-1, 1])
+
+    warnings.filterwarnings("ignore", category=UserWarning)
+    dino_embs = vits16(grid_images) #[32, 384]
+    warnings.filterwarnings("default", category=UserWarning)
+    grid_images = grid_images.cpu().numpy()
+    grid_z = dino_embs.reshape(-1, 16, 24)
+
     # TODO: Change from random noise to real images
-    grid_z = torch.randn([labels.shape[0], *input_shape[1:]], device = device)
-    grid_c = torch.from_numpy(labels).to(device)
+    # grid_z = torch.randn([labels.shape[0], *input_shape[1:]], device = device)
+    # grid_c = torch.from_numpy(labels).to(device)
+    grid_c = dino_embs.clone()
     return grid_size, grid_z, grid_c, grid_images
 
 # Save a snapshot of the sampled grid for the given latents/labels
@@ -291,7 +308,8 @@ def collect_stats(logger, stages):
         value = []
         if (stage.start_event is not None) and (stage.end_event is not None):
             stage.end_event.synchronize()
-            value = stage.start_event.elapsed_time(stage.end_event)
+            if (stage.start_event.cuda_event != 0 and stage.end_event.cuda_event != 0):
+                value = stage.start_event.elapsed_time(stage.end_event)
         training_stats.report0("Timing/" + stage.name, value)
     logger.collector.update()
     stats = logger.collector.as_dict()
@@ -384,20 +402,8 @@ def training_loop(
         exit()
 
     # translator = torch.nn.Linear(384, 17 * 32).to(device)
-    translator = torch.nn.Sequential(torch.nn.Linear(384, 17 * 32), 
-                                     torch.nn.ReLU(inplace=False)).to(device)
-
-    nets = distribute_nets(G, D, Gs, device, num_gpus, log)                                   # Distribute networks across GPUs
-    loss, stages = setup_training_stages(loss_args, G, cG, D, cD, nets, device, log, translator)          # Setup training stages (losses and optimizers)
-    # Grid of visualized images; are constants used throughout training
-    grid_size, grid_z, grid_c, grid_images = init_img_grid(dataset, G.input_shape, device, run_dir, log)   # Initialize an image grid    
-    logger = init_logger(run_dir, log)                                                        # Initialize logs
-
-    # Train
-    misc.log(f"Training for {total_kimg} kimg...", "white", log)    
-    cur_nimg, cur_tick, batch_idx = int(resume_kimg * 1000), 0, 0
-    tick_start_nimg, tick_start_time = cur_nimg, time.time()
-    stats = None
+    # translator = torch.nn.Sequential(torch.nn.Linear(384, 17 * 32), 
+    #                                  torch.nn.ReLU(inplace=False)).to(device)
 
     # cached, but probably a more efficient way to do this
     if vits_path is None:
@@ -407,16 +413,29 @@ def training_loop(
     for parameter in vits16.parameters():
         parameter.requires_grad = False
 
+    nets = distribute_nets(G, D, Gs, device, num_gpus, log)                                   # Distribute networks across GPUs
+    loss, stages = setup_training_stages(loss_args, G, cG, D, cD, nets, device, log)          # Setup training stages (losses and optimizers)
+    # Grid of visualized images; are constants used throughout training
+    grid_size, grid_z, grid_c, grid_images = init_img_grid(dataset, G.input_shape, device, run_dir, log, vits16)   # Initialize an image grid    
+    logger = init_logger(run_dir, log)                                                        # Initialize logs
+
+    # Train
+    misc.log(f"Training for {total_kimg} kimg...", "white", log)    
+    cur_nimg, cur_tick, batch_idx = int(resume_kimg * 1000), 0, 0
+    tick_start_nimg, tick_start_time = cur_nimg, time.time()
+    stats = None
+
     while True:
         # Fetch training data
         real_img, real_c, gen_zs, gen_cs = fetch_data(dataset, dataset_iter, G.input_shape, drange_net, 
-            device, len(stages), batch_size, batch_gpu, vits16, translator)
+            device, len(stages), batch_size, batch_gpu, vits16)
 
         # Execute training stages
         for stage, gen_z, gen_c in zip(stages, gen_zs, gen_cs):
             if batch_idx % stage.interval != 0:
                 continue
-            run_training_stage(loss, stage, device, real_img, real_c, gen_z, gen_c, batch_size, batch_gpu, num_gpus, vits16, translator, recon_weight)
+            #Gen_z is [4, 32, 16, 24]
+            run_training_stage(loss, stage, device, real_img, real_c, gen_z, gen_c, batch_size, batch_gpu, num_gpus, vits16, recon_weight)
 
         # Update Gs
         update_ema_network(G, Gs, batch_size, cur_nimg, ema_kimg, ema_rampup)
