@@ -7,6 +7,7 @@ import argparse
 
 import dnnlib
 import torch
+import torchvision
 import loader
 from tqdm import tqdm
 
@@ -43,10 +44,13 @@ def run(model, gpus, output_dir, images_num, truncation_psi, ratio, images_dir, 
         for parameter in vits16.parameters():
             parameter.requires_grad = False
 
-        images, labels = zip(*[dataset[i] for i in range(images_num)])
-        images = torch.Tensor(np.stack(images)).to(device)
+        # images, labels = zip(*[dataset[i] for i in range(images_num)])
+        # images = torch.Tensor(np.stack(images)).to(device)
+        # images = misc.adjust_range(images, [0, 255], [-1,1])
 
-        images = misc.adjust_range(images, [0, 255], [-1,1])
+        # custom image
+        x = torchvision.io.read_image("./test_img0.png")
+        images = misc.adjust_range(x, [0, 255], [-1,1]).unsqueeze(0).to(device)
 
         warnings.filterwarnings("ignore", category=UserWarning)
         latents = vits16(images).reshape(-1, 16, 24)

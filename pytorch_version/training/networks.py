@@ -1462,6 +1462,22 @@ class DiscriminatorEpilogue(torch.nn.Module):
         x = self.fc2(x)
         x = self.fc3(x)
 
+        # Single Layer:
+        # 8664 (8192 + 384) => 1
+
+        # 3 Layer:
+        # 8664 (8192 + 384) => 8192 => (lrelu)
+        # 8192 => 512 => (lrelu)
+        # 512 => 1 (no activation)
+
+        # 5 Layer:
+        # 8k => 2k => 384
+        # concatenate 384 + 384
+        # 768 => 768
+        # 768 => 768
+        # 768 => 256
+        # 256 => 1 (no activation)
+
         # x = self.fc(x.flatten(1))
         # x = self.out(x)
 

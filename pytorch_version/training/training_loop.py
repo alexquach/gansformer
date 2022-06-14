@@ -375,7 +375,7 @@ def training_loop(
     # Evaluation
     vis_args                = {},       # Options for vis.vis
     metrics                 = [],       # Metrics to evaluate during training
-    eval_images_num         = 50000,    # Sample size for the metrics
+    eval_images_num         = 5000,    # Sample size for the metrics
     truncation_psi          = 0.7       # Style strength multiplier for the truncation trick (used for visualizations only)
 ):  
     # Initialize
@@ -390,8 +390,8 @@ def training_loop(
     print_nets(G, D, batch_gpu, device, log)                                      # Print network summary tables
 
     # if eval:
-    #     misc.log("Run evaluation...", log = log)
-    #     evaluate(Gs, resume_pkl, metrics, eval_images_num, dataset_args, num_gpus, rank, device, log)
+        # misc.log("Run evaluation...", log = log)
+        # evaluate(Gs, resume_pkl, metrics, eval_images_num, dataset_args, num_gpus, rank, device, log)
 
     if vis and log:
         misc.log("Produce visualizations...")
